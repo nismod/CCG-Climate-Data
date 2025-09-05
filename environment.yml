@@ -4,17 +4,19 @@ channels:
   - nodefaults
 dependencies:
   - python>=3.12
-  - numpy
-  - scipy
-  - matplotlib
   - cartopy
-  - xarray
-  - netcdf4
-  - h5py
   - dask
   - fsspec
-  - s3fs
-  - requests
-  - pydap
   - h5netcdf
+  - h5py
+  - ipykernel
+  - matplotlib
+  - netcdf4
+  - numpy
   - pip
+  - pydap
+  - requests
+  - s3fs
+  - scipy
+  - tqdm
+  - xarray
