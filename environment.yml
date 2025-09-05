@@ -1,0 +1,20 @@
+name: heat-analysis
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python>=3.12
+  - numpy
+  - scipy
+  - matplotlib
+  - cartopy
+  - xarray
+  - netcdf4
+  - h5py
+  - dask
+  - fsspec
+  - s3fs
+  - requests
+  - pydap
+  - h5netcdf
+  - pip
