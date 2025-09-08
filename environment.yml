@@ -12,6 +12,7 @@ dependencies:
   - ipykernel
   - matplotlib
   - netcdf4
+  - numba
   - numpy
   - pip
   - pydap
@@ -20,3 +21,4 @@ dependencies:
   - scipy
   - tqdm
   - xarray
+  - zarr
