@@ -17,79 +17,6 @@ import xarray as xr
 from scipy.stats import genpareto
 
 
-def download_file(url, fname):
-    with requests.get(url, stream=True) as r:
-        r.raise_for_status()
-        with open(fname, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-
-
-def read_meta(path_save, nsubgrids):
-    """Download (if necessary) and read metadata, build task list of model/scenario/subgrid combinations"""
-    meta_url = "https://nex-gddp-cmip6.s3-us-west-2.amazonaws.com/index_v2.0_md5.txt"
-    meta_fname = path_save / "index_v2.0_md5.txt"
-
-    if not meta_fname.exists():
-        download_file(meta_url, meta_fname)
-
-    meta = pd.read_csv(
-        meta_fname, sep=" ", header=None, names=["hash", "_", "path"]
-    ).drop(columns="_")
-    meta = meta[meta.path.str.contains("tasmax")]
-    meta = meta[meta.path.str.endswith("_v2.0.nc")]
-
-    meta[["model", "scenario", "variable", "year"]] = meta.path.str.extract(
-        r"[^/]+/"
-        r"(?P<model>[^/]+)/"
-        r"(?P<scenario>[^/]+)/"
-        r"[^/]+/"
-        r"(?P<variable>[^/]+)/"
-        r".*"
-        r"(?P<year>\d\d\d\d)"
-        r".*"
-    )
-
-    model_scenario_combinations = (
-        meta[["model", "scenario"]]
-        .drop_duplicates()
-        .sort_values(by=["model", "scenario"])
-        .reset_index(drop=True)
-    )
-    all_task_dfs = []
-    for grid_idx in range(nsubgrids):
-        task_df = model_scenario_combinations.copy()
-        task_df["grid_idx"] = grid_idx
-        all_task_dfs.append(task_df)
-
-    return pd.concat(all_task_dfs).reset_index(drop=True), meta
-
-
-def add_bounds(tasks, grid_size):
-    # Define the latitude and longitude ranges
-    lat_range = (-60, 90)  # Latitude range
-    lon_range = (0, 360)  # Longitude range
-
-    # Divide the latitude and longitude into equal intervals
-    lat_intervals = np.linspace(lat_range[0], lat_range[1], grid_size + 1)
-    lon_intervals = np.linspace(lon_range[0], lon_range[1], grid_size + 1)
-
-    # Determine the grid cell corresponding to the job_number
-    indices_grid = tasks.grid_idx
-    lat_idx = (indices_grid // grid_size).astype(int)
-    lon_idx = (indices_grid % grid_size).astype(int)
-
-    # Get the latitude and longitude bounds for the specific grid cell
-    lat_bounds = (lat_intervals[lat_idx], lat_intervals[lat_idx + 1])
-    lon_bounds = (lon_intervals[lon_idx], lon_intervals[lon_idx + 1])
-
-    tasks["lat_min"] = lat_bounds[0]
-    tasks["lat_max"] = lat_bounds[1]
-    tasks["lon_min"] = lon_bounds[0]
-    tasks["lon_max"] = lon_bounds[1]
-    return tasks
-
-
 def compute_return_levels_1d(series):
     quantile = 0.95
     time_scale = 1
@@ -129,17 +56,11 @@ def return_period_quantiles(x):
 
 
 # Loop through all models and scenarios
-def main(task, file_meta, return_periods):
-    # Validate
-    if len(return_periods) == 0:
-        raise ValueError("TR (return periods) is empty. Cannot compute quantiles.")
-
+def main(task, file_meta):
     scenario = task.scenario
     model = task.model
-    # lon_bounds = (task.lon_min, task.lon_max)
-    # lat_bounds = (task.lat_min, task.lat_max)
-    lon_bounds = (0.0, 30.0)
-    lat_bounds = (60.0, 90.0)
+    lon_bounds = (task.lon_min, task.lon_max)
+    lat_bounds = (task.lat_min, task.lat_max)
 
     if scenario == "historical":
         time_frames = [[1984, 2014]]
@@ -150,19 +71,25 @@ def main(task, file_meta, return_periods):
         #
         # Read
         #
-        logging.info(
-            f"Reading years {tf} for Model {model}, Scenario {scenario}, lon {lon_bounds}, lat {lat_bounds}",
-        )
         start_year, end_year = tf
+        tf_str = f"{start_year}-{end_year}"
+
+        logging.info(
+            f"Reading years {tf_str} for Model {model}, Scenario {scenario}, lon {lon_bounds}, lat {lat_bounds}",
+        )
         read_start = time.time()
 
         # Filter files that match the model, scenario and years
         # years = list(map(str, range(start_year, end_year + 1)))
 
-        ds = xr.open_zarr("nex-gddp-cmip6.v2.zarr").sel(
-            lon=slice(*lon_bounds), lat=slice(*lat_bounds)
+        ds = xr.open_zarr(f"nex-gddp-cmip6.{model}.{scenario}.zarr").sel(
+            lon=slice(*lon_bounds),
+            lat=slice(*lat_bounds),
+            time=slice(f"{start_year}-01-01", f"{end_year}-12-31"),
+            model=task.model,
+            scenario=task.scenario,
         )
-        tasmax = ds["tasmax"]
+        tasmax = ds["tasmax"].compute()
 
         read_end = time.time()
         read_execution = datetime.timedelta(seconds=read_end - read_start)
@@ -199,7 +126,9 @@ def main(task, file_meta, return_periods):
         logging.info(f"Shape of final_result: {final_result.shape}")
 
         # No manual reshape; final_result is expected (len(TR), lat, lon)
-        result_xr = final_result.assign_coords(return_period=return_periods)
+        result_xr = final_result.assign_coords(
+            return_period=return_periods
+        ).expand_dims(model=[task.model], scenario=[task.scenario], epoch=[tf_str])
         result_xr.name = "tasmax_return_level"
 
         compute_end = time.time()
@@ -211,14 +140,13 @@ def main(task, file_meta, return_periods):
         #
         plot_save_start = time.time()
 
-        # Define folder structure: path_save/Scenario/Model/Time_Frame/
-        output_folder = path_save / scenario / model / f"{start_year}-{end_year}"
-        # Create output folder if it doesn't exist
-        output_folder.mkdir(parents=True, exist_ok=True)
-        # Calculate quantiles for each return period
+        # Ensure the quantiles_to_plot is a 2D array for plotting
+        result_xr.to_zarr("tasmax_quantiles.zarr", region="auto")
+        logging.info(
+            f"Saved quantiles for {model=} {scenario=} {tf=}",
+        )
 
         # plot
-        tf_str = f"{start_year}-{end_year}"
         plt.figure(figsize=(10, 6))
         ax = plt.axes(projection=ccrs.Mollweide())
         ax.set_extent(
@@ -234,9 +162,13 @@ def main(task, file_meta, return_periods):
             f"tasmax Quantiles for {model} - {scenario} - {tf_str}", fontsize=16
         )
         # Plot the quantiles for the selected return period
-        quantiles_to_plot = result_xr.sel(
-            return_period=50, model=task.model, scenario=task.scenario
-        ).data
+        plot_rp = 50
+        quantiles_to_plot = (
+            result_xr.sel(
+                return_period=plot_rp, model=task.model, scenario=task.scenario
+            ).data
+            - 273.15
+        )  # degrees K to C
         plt.pcolormesh(
             result_xr.lon.data,
             result_xr.lat.data,
@@ -245,18 +177,10 @@ def main(task, file_meta, return_periods):
             shading="auto",
             transform=ccrs.PlateCarree(),
         )
-        plt.colorbar(label="tasmax Quantiles", orientation="vertical")
-        plt.savefig(output_folder / f"tasmax_quantiles_{model}_{scenario}_{tf_str}.png")
+        plt.colorbar(label=f"tasmax RP {plot_rp}", orientation="vertical")
+        plt.savefig("plots" / f"tasmax_quantiles_{model}_{scenario}_{tf_str}.png")
         plt.close()  # Close the plot to free memory
 
-        # Ensure the quantiles_to_plot is a 2D array for plotting
-        result_xr.to_netcdf(
-            output_folder
-            / f"tasmax_quantiles_{model}_{scenario}_{tf_str}_n_{job_num}.nc"
-        )
-        logging.info(
-            f"Saved quantiles to {output_folder}/tasmax_quantiles_{model}_{scenario}_{tf_str}_n_{job_num}.nc",
-        )
         # End the timer
         plot_save_end = time.time()
         plot_save_execution = datetime.timedelta(
@@ -280,27 +204,17 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Define the return periods to calculate
-    TR = [20, 50, 100, 200, 500, 1500]
-
-    lat_cells = 600  # Number of latitude cells
-    lon_cells = 1440  # Number of longitude cells
-    grid_size = 4  # Number of divisions along each axis
-    grid_div = grid_size**2  # Number of grid divisions
-
     logging.info("Starting the script to process climate data...")
 
-    all_tasks, file_meta = read_meta(path_save, grid_div)
+    all_tasks = pd.read_csv(path_save / "tasmax_tasks.csv")
     ntasks = len(all_tasks)
 
     # Select tasks for this job_num (stride through ntasks with spacing of total_num)
     task_ids = np.arange(job_num, ntasks, total_num)
     tasks = all_tasks.iloc[task_ids].copy()
-    tasks = add_bounds(tasks, grid_size)
-
     variable = "tasmax"
     logging.info(f"Processing variable: {variable}")
 
     for task in tasks.itertuples():
-        main(task, file_meta, TR)
+        main(task, file_meta)
         break
