@@ -1,2 +1,6 @@
 Files
 data
+plots
+*.zarr
+*.txt
+NOTES
