@@ -9,13 +9,13 @@ dependencies:
   - fsspec
   - h5netcdf
   - h5py
+  - joblib
   - ipykernel
   - matplotlib
   - netcdf4
   - numba
   - numpy
   - pip
-  - pydap
   - requests
   - s3fs
   - scipy
