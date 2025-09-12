@@ -3,4 +3,5 @@ data
 plots
 *.zarr
 *.txt
+*.log
 NOTES
