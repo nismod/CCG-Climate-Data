@@ -3,10 +3,9 @@ import sys
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import xarray as xr
-from joblib import Parallel, delayed
-from tqdm.auto import tqdm
 
 warnings.filterwarnings(
     "ignore",
@@ -17,6 +16,17 @@ warnings.filterwarnings(
 
 def reencode_file(nc_path, model, scenario, zarr_path):
     ds = xr.open_dataset(nc_path).compute()
+    # Convert to standard calendar in datetime64[ns] and interpolate
+    # e.g. from cftime.DatetimeNoLeap in NorESM2-MM
+    # or cftime.Datetime360Day in HadGEM3-GC31-LL
+    ds = ds.convert_calendar("standard", align_on="year", dim="time", use_cftime=False)
+    full_coords = np.arange(
+        ds.time.values[0],
+        ds.time.values[-1] + np.timedelta64(1, "D"),
+        dtype="datetime64[D]",
+    ).astype("datetime64[ns]") + np.timedelta64(12, "h")
+    ds = ds.interp(time=full_coords, method="linear")
+
     ds = ds.chunk({"time": -1, "lat": 120, "lon": 120}).compute()
     ds = ds.expand_dims(
         model=[model],
@@ -56,13 +66,14 @@ if __name__ == "__main__":
     zarr_path = work_path / "nex-gddp-cmip6.zarr"
 
     for i, ((model, scenario), df) in enumerate(meta.groupby(["model", "scenario"])):
-        # if i != job:
-        #     continue
+        if i != job:
+            continue
         logging.info("%d Processing %s %s with %d files", i, model, scenario, len(df))
 
-        # fnames = df.path
+        fnames = df.path
 
-        # for fname in tqdm(fnames):
-        #     reencode_file(nc_path / fname, model, scenario, zarr_path)
+        for fname in fnames:
+            logging.info("Processing %s", fname)
+            reencode_file(nc_path / fname, model, scenario, zarr_path)
 
-        # logging.info(f"Done for {model=}, {scenario=}")
+        logging.info(f"Done for {model=}, {scenario=}")
