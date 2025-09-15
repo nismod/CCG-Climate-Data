@@ -60,10 +60,17 @@ def thornthwaite(T):
 
 
 def compute_spei(pe, timescale):
+    assert len(pe.coords["lat"]) == 1
+    assert len(pe.coords["lon"]) == 1
+
     pe_array = pe.sel(lat=pe.coords["lat"][0], lon=pe.coords["lon"][0]).values
     pe_series = pd.Series(data=pe_array, index=pd.DatetimeIndex(data=pe.time))
     spei_series = si.spei(pe_series, timescale=timescale, fit_freq="ME")
-    return spei_series.values
+    return xr.DataArray(
+        spei_series.values,
+        dims=["time"],
+        coords={"time": pe.time},
+    ).expand_dims(model=pe.model, scenario=pe.scenario, lat=pe.lat, lon=pe.lon)
 
 
 # Wrapper to compute return levels per block while preserving spatial dims
@@ -79,7 +86,8 @@ def spei_return_period_quantiles(tasmax, pr, timescale):
         pe,
         args=[timescale],
         template=pe,
-    )
+    ).compute()
+    breakpoint()
 
     # Compute return levels for each grid point
     return xr.apply_ufunc(
@@ -100,6 +108,7 @@ def main(task, work_path):
     lat_bounds = (task.lat_min, task.lat_max)
     start_year, end_year = tuple(map(int, task.epoch.split("-")))
     tf_str = f"{start_year}-{end_year}"
+    return_periods = np.asarray([20, 50, 100, 200, 500, 1500], dtype="f8")
 
     ds = xr.open_zarr(work_path / "nex-gddp-cmip6.zarr").sel(
         lon=slice(*lon_bounds),
@@ -118,16 +127,16 @@ def main(task, work_path):
     pr = pr.chunk({"time": -1, "lat": 30, "lon": 30}).compute()
 
     result3 = spei_return_period_quantiles(tasmax, pr, 90).compute()
-    result3 = result3.assign_coords(
-        return_period=np.asarray([20, 50, 100, 200, 500, 1500], dtype="f8")
-    ).expand_dims(model=[task.model], scenario=[task.scenario], epoch=[tf_str])
+    result3 = result3.assign_coords(return_period=return_periods).expand_dims(
+        model=[task.model], scenario=[task.scenario], epoch=[tf_str]
+    )
     result3.name = "spei3_return_level"
     result3.to_zarr(work_path / "nex-gddp-cmip6.return_levels.zarr", region="auto")
 
     result12 = spei_return_period_quantiles(tasmax, pr, 360).compute()
-    result12 = result12.assign_coords(
-        return_period=np.asarray([20, 50, 100, 200, 500, 1500], dtype="f8")
-    ).expand_dims(model=[task.model], scenario=[task.scenario], epoch=[tf_str])
+    result12 = result12.assign_coords(return_period=return_periods).expand_dims(
+        model=[task.model], scenario=[task.scenario], epoch=[tf_str]
+    )
     result12.name = "spei12_return_level"
     result12.to_zarr(work_path / "nex-gddp-cmip6.return_levels.zarr", region="auto")
     logging.info(f"Saved quantiles", flush=True)
