@@ -1,4 +1,4 @@
-"""heat.py - Script for Handling Remote Dataset Metadata"""
+"""Calculate tasmax return periods"""
 
 import datetime
 import logging
@@ -53,7 +53,7 @@ def return_period_quantiles(x):
     )
 
 
-def main(task, path_save):
+def main(task, work_path):
     scenario = task.scenario
     model = task.model
     lon_bounds = (task.lon_min, task.lon_max)
@@ -70,10 +70,7 @@ def main(task, path_save):
     )
     read_start = time.time()
 
-    # Filter files that match the model, scenario and years
-    # years = list(map(str, range(start_year, end_year + 1)))
-
-    ds = xr.open_zarr(f"nex-gddp-cmip6.{model}.{scenario}.zarr").sel(
+    ds = xr.open_zarr(work_path / "nex-gddp-cmip6.zarr").sel(
         lon=slice(*lon_bounds),
         lat=slice(*lat_bounds),
         time=slice(f"{start_year}-01-01", f"{end_year}-12-31"),
@@ -129,7 +126,7 @@ def main(task, path_save):
     plot_save_start = time.time()
 
     # Ensure the quantiles_to_plot is a 2D array for plotting
-    result_xr.to_zarr("tasmax_quantiles.zarr", region="auto")
+    result_xr.to_zarr(work_path / "nex-gddp-cmip6.return_levels.zarr", region="auto")
     logging.info(
         f"Saved quantiles for {model=} {scenario=} {tf_str=}",
     )
@@ -168,7 +165,7 @@ def main(task, path_save):
     )
     plt.colorbar(label=f"tasmax RP {plot_rp}", orientation="vertical")
     plt.savefig(
-        path_save
+        work_path
         / "plots"
         / f"tasmax_quantiles_{model}_{scenario}_{tf_str}_{lon_bounds[0]}-{lat_bounds[0]}.png"
     )
@@ -182,11 +179,11 @@ def main(task, path_save):
 
 if __name__ == "__main__":
     try:
-        path_save = Path(sys.argv[1])
+        work_path = Path(sys.argv[1])
         job_num = int(sys.argv[2])
         total_num = int(sys.argv[3])
     except IndexError:
-        print(f"Usage: python {__file__} <save_path> <start_num> <end_num>")
+        print(f"Usage: python {__file__} <work_path> <start_num> <end_num>")
         sys.exit()
 
     logging.basicConfig(
@@ -197,7 +194,7 @@ if __name__ == "__main__":
 
     logging.info("Starting the script to process climate data...")
 
-    all_tasks = pd.read_csv(path_save / "tasmax_tasks.csv")
+    all_tasks = pd.read_csv(work_path / "tasmax_tasks.csv")
     ntasks = len(all_tasks)
 
     # Select tasks for this job_num (stride through ntasks with spacing of total_num)
@@ -208,4 +205,4 @@ if __name__ == "__main__":
     logging.info(f"Processing: {variable=}, {len(task_ids)} tasks: {task_ids=}")
 
     for task in tasks.itertuples():
-        main(task, path_save)
+        main(task, work_path)
