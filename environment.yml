@@ -16,6 +16,8 @@ dependencies:
   - numba
   - numpy
   - pip
+  - pip:
+      - spei
   - requests
   - s3fs
   - scipy
